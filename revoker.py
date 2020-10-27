@@ -2,6 +2,7 @@ import time
 
 import pyautogui as pag
 
+# click the window to keep login
 pag.FAILSAFE = False
 while True:
     time.sleep(180)

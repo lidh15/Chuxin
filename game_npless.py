@@ -1,19 +1,16 @@
 from random import shuffle
 
-COLORS = {'m':0, 'p':9, 's':18, 'z':27}
-TILESTR = [str(i)+'m' for i in range(1, 10)] + \
-    [str(i)+'p' for i in range(1, 10)] + \
-    [str(i)+'s' for i in range(1, 10)] + \
-    [str(i)+'z' for i in range(1, 8)]
-TILE_IDXMOD = dict([(t, i) for i, t in enumerate(TILESTR)])
-IDX_TILE = dict([(i, TILESTR[i % 34]) for i in range(136)])
-NOTAMELD = -100
+from utils import (COLORS, IDX_TILER, argmax, cntMelds, cntMeldsAll, cntPts,
+                   tileParser)
+
 
 class Game(object):
     def __init__(self, agents=None):
         super(Game, self).__init__()
         self.mountain = list(range(136)) # 牌山
-        self.nonmiddle = [0, 8, 9, 17, 18, 26] + list(range(27, 34))
+        self.zi0 = range(27, 31)
+        self.zi1 = range(31, 34)
+        self.nonmiddle = [0, 8, 9, 17, 18, 26] + list(self.zi0) + list(self.zi1)
         self.nonmiddlechow = [0, 6, 9, 15, 18, 24]
         self.doramap = lambda i: (i + 1) % 9 + i // 9 * 9 if i < 27 \
             else (i - 6) % (3 + (i < 31)) + 31 - (i < 31) * 4 # 宝牌指示
@@ -81,6 +78,7 @@ class Game(object):
         self.fritens = [0]*4      # 舍张振听
         self.fritenl = [0]*4      # 立直振听
         self.roned = [0]*4        # 和了点数
+        self.baopai = [[0]*4, [0]*4, [0]*4, [0]*4] # 包牌
         
         self.clear = [1]*4        # 门前清
         self.liuman = [1]*4       # 流局满贯
@@ -92,7 +90,7 @@ class Game(object):
         self.kongop = [[0]*34, [0]*34, [0]*34, [0]*34]  # 明杠
         self.kongcls = [[0]*34, [0]*34, [0]*34, [0]*34] # 暗杠
         
-    def drawStep(self, idx, kongDecisions, kongDos, ronDos, liujuDos):
+    def drawStep(self, idx, kongDecisions, kongDos, ronDos, liujuDos, redfives):
         """Draw a tile and related actions
         
         Args:
@@ -101,13 +99,14 @@ class Game(object):
             kongDos ((4,) boolean): kong or not
             ronDos ((4,) boolean): ron or not
             liujuDos ((4,) boolean): nn or not
+            redfives ((4,) boolean): add kong red five or not
         
         Returns:
             boolean: next step, draw a tile if True, discard a tile if False 
         """
         player = self.playerthis
         dealer = self.dealer
-        handscnt = self.handscnt
+        handscnti = self.handscnt[player]
         roned = self.roned
         bet = self.bet
         repeat = self.repeat
@@ -116,44 +115,84 @@ class Game(object):
         if self.first and self.leftnum < 66:
             self.first = 0
         # 九种九牌
-        if self.first and liujuDos[player] and sum([handscnt[player][i] > 0 for i in self.nonmiddle]) > 8:
+        if self.first and liujuDos[player] and sum([handscnti[i] > 0 for i in self.nonmiddle]) > 8:
             self.liuju = 1
             return False
         # 自摸
+        baopai = self.baopai
         fanBase, fan, fu = ronAva(idx, player, False)
         if fanBase > 0 and ronDos[player]:
             pt1, pt2, _, _ = cntPts(fan, fu)
+            baopaii = baopai[player]
             if dealer == player:
-                for playeri in range(4):
-                    if playeri == player:
-                        roned[playeri] += pt2 * 3 + bet * 1000 + repeat * 300
-                    else:
-                        roned[playeri] -= pt2 + repeat * 100
+                if any(baopaii):
+                    bao = pt2 * 3 + repeat * 300
+                    roned[player] += bao + bet * 1000
+                    roned[baopaii.index(1)] -= bao
+                else:
+                    for playeri in range(4):
+                        if playeri == player:
+                            roned[playeri] += pt2 * 3 + bet * 1000 + repeat * 300
+                        else:
+                            roned[playeri] -= pt2 + repeat * 100
             else:
-                for playeri in range(4):
-                    if playeri == player:
-                        roned[playeri] += pt2 + pt1 * 2 + bet * 1000 + repeat * 300
-                    elif playeri == dealer:
-                        roned[playeri] -= pt2 + repeat * 100
-                    else:
-                        roned[playeri] -= pt1 + repeat * 100
+                if any(baopaii):
+                    bao = pt2 + pt1 * 2 + repeat * 300
+                    roned[player] += bao + bet * 1000
+                    roned[baopaii.index(1)] -= bao
+                else:
+                    for playeri in range(4):
+                        if playeri == player:
+                            roned[playeri] += pt2 + pt1 * 2 + bet * 1000 + repeat * 300
+                        elif playeri == dealer:
+                            roned[playeri] -= pt2 + repeat * 100
+                        else:
+                            roned[playeri] -= pt1 + repeat * 100
             self.bet = 0
             return False
         # 杠
         if self.kongAva(idx, player) and kongDos[player]:
-            # 若是加杠，需检查是否被抢杠，此处不考虑国士无双抢暗杠
-            if self.kong(None, player, kongDecisions[player], None):
+            decision = kongDecisions[player]
+            # 若是加杠，需检查是否被抢杠
+            jia = self.kong(None, player, decision, None)
+            konged = argmax(decision)
+            if redfives[player] and konged in [4, 13, 22]:
+                konged += 102
+            # 国士无双抢暗杠
+            if jia:
                 self.grabkong = 1
+                toutiao = 1
                 for position in range(3):
                     playeri = (player + position + 1) % 4
-                    fanBase, fan, fu = ronAva(idx, playeri, False)
+                    fanBase, fan, fu = ronAva(konged, playeri, False)
                     if fanBase > 0 and ronDos[playeri] and not friten[playeri]:
                         _, _, pt4, pt6 = cntPts(fan, fu)
                         pt = pt6 if dealer == playeri else pt4
-                        roned[playeri] += pt + self.bet * 1000 + repeat * 300
-                        roned[player] -= pt + repeat * 300
+                        baopaii = baopai[playeri]
+                        if any(baopaii):
+                            roned[playeri] += pt + self.bet * 1000 + repeat * 300 * toutiao
+                            roned[player] -= pt // 2
+                            roned[baopaii.index(1)] -= pt // 2 + repeat * 300 * toutiao
+                        else:
+                            roned[playeri] += pt + self.bet * 1000 + repeat * 300 * toutiao
+                            roned[player] -= pt + repeat * 300 * toutiao
                         self.bet = 0
+                        toutiao = 0
                 self.grabkong = 0
+            elif konged in self.nonmiddle:
+                toutiao = 1
+                for position in range(3):
+                    playeri = (player + position + 1) % 4
+                    fanBase, fan, fu = ronAva(konged, playeri, False)
+                    # 最后一个返回值标记是不是国士
+                    if fanBase > 12 and fu < 0 and ronDos[playeri] and not friten[playeri]:
+                        _, _, pt4, pt6 = cntPts(fan, fu)
+                        pt = pt6 if dealer == playeri else pt4
+                        roned[playeri] += pt + self.bet * 1000 + repeat * 300 * toutiao
+                        roned[player] -= pt + repeat * 300 * toutiao
+                        self.bet = 0
+                        toutiao = 0
+            self.abrupt = [0] * 4
             return True
         return False
         
@@ -182,17 +221,28 @@ class Game(object):
         ronAva = self.ronAva
         kongAva = self.kongAva
         pongAva = self.pongAva
+        zi0 = self.zi0
+        zi1 = self.zi1
+        baopai = self.baopai
         friten = [l+s+t for l, s, t in zip(self.fritenl, self.fritens, self.fritent)]
-        # 检查是否放铳，由于立直棒头跳，需要按顺序检查
+        # 检查是否放铳，由于供托头跳，需要按顺序检查
+        toutiao = 1
         for position in range(3):
             playeri = (player + position + 1) % 4
             fanBase, fan, fu = ronAva(idx, playeri, False)
             if fanBase > 0 and ronDos[playeri] and not friten[playeri]:
                 _, _, pt4, pt6 = cntPts(fan, fu)
                 pt = pt6 if dealer == playeri else pt4
-                roned[playeri] += pt + self.bet * 1000 + repeat * 300
-                roned[player] -= pt + repeat * 300
+                baopaii = baopai[playeri]
+                if any(baopaii):
+                    roned[playeri] += pt + self.bet * 1000 + repeat * 300 * toutiao
+                    roned[player] -= pt // 2
+                    roned[baopaii.index(1)] -= pt // 2 + repeat * 300 * toutiao
+                else:
+                    roned[playeri] += pt + self.bet * 1000 + repeat * 300 * toutiao
+                    roned[player] -= pt + repeat * 300 * toutiao
                 self.bet = 0
+                toutiao = 0
             # 不和则同巡振听
             if fanBase and not ronDos[playeri]:
                 self.fritent[playeri] = 1
@@ -206,11 +256,23 @@ class Game(object):
         for playeri in range(4):
             if (not (playeri == player)) and kongAva(idx, playeri) and kongDos[playeri]:
                 self.kong(idx, playeri, None, None)
+                idxmod = idx % 34
+                if (idxmod in zi0 and all([i + j for i, j in \
+                    zip(self.pongop[playeri][27:31], self.kongop[playeri][27:31])])) or \
+                    (idxmod in zi1 and all([i + j for i, j in \
+                    zip(self.pongop[playeri][31:34], self.kongop[playeri][31:34])])):
+                    baopai[playeri][player] = 1
                 return True
         # 碰
         for playeri in range(4):
             if (not (playeri == player)) and pongAva(idx, playeri) and pongDos[playeri]:
                 self.pong(idx, playeri, None, redfives[playeri])
+                idxmod = idx % 34
+                if (idxmod in zi0 and all([i + j for i, j in \
+                    zip(self.pongop[playeri][27:31], self.kongop[playeri][27:31])])) or \
+                    (idxmod in zi1 and all([i + j for i, j in \
+                    zip(self.pongop[playeri][31:34], self.kongop[playeri][31:34])])):
+                    baopai[playeri][player] = 1
                 return False
         # 吃
         self.playerthis = (player + 1) % 4
@@ -218,9 +280,9 @@ class Game(object):
         if self.chowAva(idx, None) and chowDos[player]:
             self.chow(idx, player, chowDecisions[player], redfives[player])
             return False
-        # 四风连打，四杠散了
-        if (leftnum == 66 and any([all([rivercnti[i] for rivercnti in rivercnt]) for i in range(27, 31)])) or \
-            (self.doranum == 5 and max([sum(handscnti) for handscnti in self.handscnt]) < 17):
+        # 四风连打，四杠散了，四家立直
+        if (leftnum == 66 and all(self.clear) and any([all([rivercnti[i] for rivercnti in rivercnt]) for i in zi0])) or \
+            (self.doranum == 5 and max([sum(handscnti) for handscnti in self.handscnt]) < 17) or all(self.riichi):
             self.liuju = 1
         # 荒牌流局
         if not leftnum:
@@ -258,7 +320,7 @@ class Game(object):
                 discardDecisions, _, kongDecisions, _, _, \
                     kongDos, ronDos, riichiDos, liujuDos, redfives = agents()
                 nextStep = drawStep(
-                    idx, kongDecisions, kongDos, ronDos, liujuDos
+                    idx, kongDecisions, kongDos, ronDos, liujuDos, redfives
                 )
                 if nextStep: # 若仍是摸牌，需要重新决策
                     discardDecisions, _, kongDecisions, _, _, \
@@ -279,9 +341,7 @@ class Game(object):
         
         lastdealer = self.dealer
         lastdirection = self.direction
-        huangpai = self.huangpai
         points = self.points
-        liuman = self.liuman
         if any(roned):
             self.bet = 0
             for playeri in range(4):
@@ -297,43 +357,47 @@ class Game(object):
                     self.direction += 1
         else:
             self.repeat += 1
-            # 罚符
-            listened = [sum(listeni) > 0 for listeni in self.listen]
-            if any(listened) and not all(listened) and huangpai: # 或not self.leftnum
-                for player in range(4):
-                    if listened[player]:
-                        points[player] += int(3000 / sum(listened))
-                    else:
-                        points[player] -= int(3000 / (4 - sum(listened)))
-            # 流局满贯
-            for playeri in range(4):
-                if liuman[playeri]:
-                    if playeri == lastdealer:
-                        for i in range(4):
-                            if i == playeri:
-                                points[i] += 12000
+            if self.huangpai and not self.liuju:
+                listened = [sum(listeni) > 0 for listeni in self.listen]
+                liuman = self.liuman
+                if any(liuman):
+                    # 流局满贯
+                    for playeri, liumani in enumerate(liuman):
+                        if liumani:
+                            if playeri == lastdealer:
+                                for i in range(4):
+                                    if i == playeri:
+                                        points[i] += 12000
+                                    else:
+                                        points[i] -= 4000
                             else:
-                                points[i] -= 4000
-                    else:
-                        for i in range(4):
-                            if i == playeri:
-                                points[i] += 8000
-                            elif i == lastdealer:
-                                points[i] -= 4000
+                                for i in range(4):
+                                    if i == playeri:
+                                        points[i] += 8000
+                                    elif i == lastdealer:
+                                        points[i] -= 4000
+                                    else:
+                                        points[i] -= 2000
+                else:
+                    # 罚符
+                    if any(listened) and not all(listened):
+                        for player in range(4):
+                            if listened[player]:
+                                points[player] += int(3000 / sum(listened))
                             else:
-                                points[i] -= 2000
-            # 荒牌流局且亲家未听则过庄
-            if not listened[lastdealer] and huangpai: # 或not self.leftnum
-                self.dealer += 1
-                if self.dealer == 4:
-                    self.dealer = 0
-                    self.direction += 1
+                                points[player] -= int(3000 / (4 - sum(listened)))
+                # 亲家未听则过庄
+                if not listened[lastdealer]:
+                    self.dealer += 1
+                    if self.dealer == 4:
+                        self.dealer = 0
+                        self.direction += 1
         direction = self.direction
         ko = min(points) < 0 # 击飞
-        lastround = direction == 2 and max(points) > 30000 # 南四或西入
-        northwin = argmax(points) == 3 and lastdirection == 1 and lastdealer == 3 # 南四亲一位
-        finalround = direction == 3 # 无北入
-        gameEnd = ko or lastround or northwin or finalround
+        northwin = argmax(points) == 3 and points[3] >= 30000 and lastdirection == 1 and lastdealer == 3 # 南四亲一位
+        westbreak = direction == 2 and max(points) >= 30000 # 西入
+        westfourth = direction == 3 # 无北入
+        gameEnd = ko or northwin or westbreak or westfourth
         if gameEnd:
             points[argmax(points)] += self.bet * 1000
         return gameEnd
@@ -356,19 +420,25 @@ class Game(object):
         
         isthis = self.playerthis == player
         kongclsi = self.kongcls[player]
+        kongopi = self.kongop[player]
+        handcnt = self.handscnt[player]
         kongclsisum = sum(kongclsi)
         riichii = self.riichi[player]
         cleari = self.clear[player]
         nonmiddle = self.nonmiddle
         nonmiddlechow = self.nonmiddlechow
         # deep copy
-        cntall = [i for i in self.handscnt[player]]
+        cntall = [i for i in handcnt]
         
         idxmod = idx % 34
         if fast or not isthis:
             cntall[idxmod] += 1
         tiles = [i for i, cnti in enumerate(cntall) if cnti]
         kongeds = [i for i, konged in enumerate(kongclsi) if konged]
+        for i in kongeds:
+            assert cntall[i] > 3
+            cntall[i] -= 4
+        kongeds = [i for i, konged in enumerate(kongopi) if konged]
         for i in kongeds:
             assert cntall[i] > 3
             cntall[i] -= 4
@@ -382,7 +452,8 @@ class Game(object):
         assert sum(cnt) % 3 == 2 # 若干面子加一将
         # 国士无双/国士无双十三面
         orphanscheck = [tile in nonmiddle for tile in tiles]
-        thirteenorphans = len(tiles) == 13 and all(orphanscheck)
+        orphansall = all(orphanscheck)
+        thirteenorphans = len(tiles) == 13 and orphansall
         # 七对子（也可能是两杯口，后续区分）
         sevenpairs = len(tiles) == 7 and all([cnt[tile] == 2 for tile in tiles]) and cleari
         # 面子手
@@ -414,12 +485,14 @@ class Game(object):
         mian = sum(self.listen[player])
         # 天和/地和
         tiandi = self.first and isthis
-        if sevenpairs and tiandi:
-            return 13, 13, 25
+        tian = tiandi and player == self.dealer
+        yiman += tiandi
+        ridgeview = self.ridgeview
+        grabkong = self.grabkong
         # 立直，两立直，一发，抢杠，岭上开花，门清自摸，海底摸月/河底捞鱼，断幺九，混老头
         fan = riichii + self.wriichi[player] + self.abrupt[player] + \
-            self.grabkong + self.ridgeview + (cleari and isthis) + (not self.leftnum) + \
-            (not any(orphanscheck)) + all(orphanscheck) * 2
+            grabkong + (ridgeview and isthis) + (cleari and isthis) + (not (ridgeview or self.leftnum)) + \
+            (not any(orphanscheck)) + orphansall * 2
         # 染手
         singlecolor = list(set([tile // 9 for tile in tiles]))
         numcolor = len(singlecolor)
@@ -434,37 +507,48 @@ class Game(object):
                 # 九莲宝灯/纯正九莲宝灯
                 tmp = tiles[0] // 9 * 9
                 # 纯正九莲宝灯听牌时为311111113，9面听
-                yiman += (cleari and not any(kongclsi)) * ((mian == 9) + \
+                yiman += (cleari and not any(kongclsi)) * (1 + (mian == 9 or tian)) * \
                     (all([i - ((i - 1) % 2) == 1 for i in cnt[tmp+1:tmp+8]]) and \
-                    all([i - ((i - 1) % 2) == 3 for i in [cnt[tmp], cnt[tmp+8]]])))
+                    all([i - ((i - 1) % 2) == 3 for i in [cnt[tmp], cnt[tmp+8]]]))
         # 混一色
         if numcolor == 2 and zincolor:
             fan += 2 + cleari
         # 宝牌/红宝牌，里宝牌
+        doraid = self.doraid
+        dorainid = self.dorainid
         fandora = self.dora[player] + sum(self.hands[player][106:133:9]) + \
-            self.dorain[player] * riichii
+            self.dorain[player] * riichii - \
+            (ridgeview > 0 and isthis) * (handcnt[doraid[-1]] + handcnt[dorainid[-1]] * riichii)
         if not isthis:
-            fandora += (idxmod in self.doraid) + (idx in red) + \
-                (idxmod in self.dorainid) * riichii
+            fandora += (doraid.count(idxmod)) + (idx in red) + \
+                (dorainid.count(idxmod)) * riichii
         # 七对子固定25符
         if sevenpairs and not ronmelds:
-            return fan + 2, fan + 2 + fandora, 25
+            if yiman:
+                return 13 * yiman, 13 * yiman, 25
+            else:
+                return fan + 2, min(fan + 2 + fandora, 13), 25
+        # 国士无双，国士无双十三面
+        yiman += thirteenorphans * (1 + (mian == 13 or tian))
+        # 用-1符标记国士无双
+        if thirteenorphans:
+            return 13 * yiman, 13 * yiman, -1
         melds0 = meldsall[0]
-        # 绿一色，清老头，四杠子，大三元，大四喜，小四喜，国士无双，国士无双十三面
-        yiman += tiandi + \
-            all([tile in green for tile in tiles]) + \
+        zi0 = self.zi0
+        zi1 = self.zi1
+        # 绿一色，清老头，四杠子，大三元，大四喜，小四喜
+        yiman += all([tile in green for tile in tiles]) + \
             all([tile in nonmiddle[:6] for tile in tiles]) + \
             (kongclsisum + kongopisum == 4) + \
-            all([pongopall[i] or any([meld[2:] == IDX_TILE[i] for meld in melds0]) for i in range(31, 34)]) + \
-            all([pongopall[i] or any([meld[2:] == IDX_TILE[i] for meld in melds0]) for i in range(27, 31)]) + \
-            all([pongopall[i] or any([meld[-2:] == IDX_TILE[i] for meld in melds0]) for i in range(27, 31)]) + \
-            thirteenorphans + (mian == 13)
+            all([pongopall[i] or any([meld[2:] == IDX_TILER[i] for meld in melds0]) for i in zi1]) + \
+            all([pongopall[i] or any([meld[2:] == IDX_TILER[i] for meld in melds0]) for i in zi0]) + \
+            all([pongopall[i] or any([meld[-2:] == IDX_TILER[i] for meld in melds0]) for i in zi0])
         # 小三元
-        fan += all([pongopall[i] or any([meld[-2:] == IDX_TILE[i] for meld in melds0]) for i in range(31, 34)]) * 2      
+        fan += all([pongopall[i] or any([meld[-2:] == IDX_TILER[i] for meld in melds0]) for i in zi1]) * 2      
         # 自风，场风，役牌
         yiall = [(player - self.dealer) % 4, self.direction, 4, 5, 6]
-        fan += sum([any([meld[2:] == IDX_TILE[yi+27] for meld in melds0]) or pongopall[yi+27] for yi in yiall])
-        fu = any([any([meld[1:] == IDX_TILE[yi+27] for meld in melds0]) for yi in yiall]) * 2 + \
+        fan += sum([any([meld[2:] == IDX_TILER[yi+27] for meld in melds0]) or pongopall[yi+27] for yi in yiall])
+        fu = sum([any([meld[1:] == IDX_TILER[yi+27] for meld in melds0]) for yi in yiall]) * 2 + \
             pongopisum * 2 + kongopisum * 8 + kongclsisum * 16 + \
             sum([pongopi[i]*2 + kongopi[i]*8 + kongclsi[i]*16 for i in nonmiddle])
         # 三杠子
@@ -472,96 +556,105 @@ class Game(object):
         # 高点原则
         fanmax = 0
         fumax = 0
-        yimanmax = 0
-        rontile = IDX_TILE[idx]
+        rontile = IDX_TILER[idxmod]
         for melds in meldsall:
             fantmp = 0
-            futmp = fu
-            yimantmp = 0
+            futmp = 0
             nonmiddletmp = [meld[0] == '1' or meld[-2] == '9' or meld[-1] == 'z' for meld in melds]
-            # 暗刻数
-            pongclstmp = [meld[1] == meld[2] and (isthis or not rontile == meld[2:]) for meld in melds]
-            npongcls = sum(pongclstmp)
-            npongclsron = any([meld[1] == meld[2] and (isthis and rontile == meld[2:]) for meld in melds])
-            npongclsnonmiddle = sum([i and j for i, j in zip(nonmiddletmp, pongclstmp)])
-            # 四暗刻/四暗刻单骑（暗杠也是暗刻）
-            yimantmp += (kongclsisum + npongcls == 4) * (2 - npongclsron)
-            # 三暗刻（暗杠也是暗刻）
-            fantmp += (kongclsisum + npongcls == 3) * 2
+            # 混全带幺九/纯全带幺九
+            if not orphansall:
+                hunquan = nonmiddleall and all(nonmiddletmp)
+                chunquan = all([(meld[0] == '1' or meld[-2] == '9') and not meld[-1] == 'z' for meld in melds]) and \
+                    sum(pongopall[i] for i in nonmiddle[:6]) == pongopallsum
+                fantmp += hunquan * (1 + cleari + chunquan)
             # 三色同刻
             fantmp += any([
-                sum(pongopall[i:27:9]) + sum([str(i+1) == meld[2] and meld[1] == meld[2] for meld in melds]) == 3 \
+                sum(pongopall[i:27:9]) + sum([str(i+1) == meld[2] and meld[1] == meld[2] and not meld[-1] == 'z' for meld in melds]) == 3 \
                 for i in range(9)
             ]) * 2
             # 三色同顺
-            fantmp += any([
-                min([
-                    k + j for k, j in zip(
-                        chowopi[i:27:9], [str(111*i+123)+c in melds for c in sorted(COLORS)[:3]]
-                        )
-                ])
-                for i in range(7)
-            ]) * (1 + cleari)
+            fantmp += any(
+                [all([k + (str(111*i+123)+j in melds) for k, j in zip(chowopi[i:27:9], sorted(COLORS)[:3])]) for i in range(7)]
+            ) * (1 + cleari)
             # 对对和
             fantmp += (pongopallsum + sum([meld[1] == meld[2] for meld in melds]) == 4) * 2
             # 一杯口/两杯口
-            fantmp += sum(beikou[:1+[melds.count(meld) for meld in set(melds)].count(2)]) * cleari
-            # 混全带幺九
-            fantmp += (nonmiddleall and all(nonmiddletmp)) * (1 + cleari)
-            # 纯全带幺九（多一番）
-            fantmp += all([meld[0] == '1' or meld[-2] == '9' for meld in melds]) and \
-                    sum(pongopall[i] for i in nonmiddle[:6]) == pongopallsum
+            cntbeikou = [melds.count(meld) for meld in set(melds)]
+            fantmp += sum(beikou[:1+cntbeikou.count(2)+cntbeikou.count(3)]) * cleari
             # 一气通贯
-            isseq = [all(cntall[i*9:i*9+9]) for i in range(3)]
-            if any(isseq):
-                isseqc = isseq.index(1)
-                fantmp += (len(cntMeldsAll([j - (i // 9 == isseqc) for i, j in enumerate(cntall)])) > 0) * (1 + cleari)
-            # 算符
-            futmp += npongcls * 4 + npongclsnonmiddle * 4
-            # 平和
-            ping = cleari and not futmp and any([
-                    # 两面
-                    int(meld[0]) + 1 == int(meld[1]) and (
-                        (meld[0] + meld[-1] == rontile and not meld[:3] == '789') or \
-                        (meld[2] + meld[-1] == rontile and not meld[:3] == '123')
-                    )
-                    for meld in melds
-                ])
-            if ping:
-                fantmp += 1
-            # 尽量争取2符
-            else:
-                futmp += 2 * any([
-                    # 坎张
-                    (meld[1] + meld[-1] == rontile and int(meld[0]) + 1 == int(meld[1])) or \
-                    # 边张
-                    (meld[0] + meld[-1] == rontile and meld[:3] == '789') or \
-                    (meld[2] + meld[-1] == rontile and meld[:3] == '123') or \
-                    # 单骑
-                    (meld[1] + meld[-1] == rontile and meld[0] == meld[1])
-                    for meld in melds
-                ])
-            # 自摸2符，门前清荣和10符
-            if isthis:
-                futmp += 2 * (not ping)
-            elif cleari:
-                futmp += 10
-            # 一番20符作一番30符处理
-            if fan + fantmp == 1 and not (futmp or fandora):
-                futmp = 10
-            futmp = (futmp // 10 + (futmp % 10 > 0)) * 10
+            fantmp += any(
+                [all([k + (str(333*j+123)+c in melds) for k, j in zip(chowopi[COLORS[c]::3][:3], range(3))]) for c in sorted(COLORS)[:3]]
+            ) * (1 + cleari)
+            nt, ct = rontile[0], rontile[1]
+            rontilepos = [i for i, meld in enumerate(melds) if ct == meld[-1] and (nt in meld[:-1])]
+            fantmpmax = 0
+            futmpmax = 0
+            yimanmax = 0
+            for rontileposi in rontilepos:
+                # 暗刻
+                pongclstmp = [meld[1] == meld[2] and (isthis or not i == rontileposi) for i, meld in enumerate(melds)]
+                npongcls = sum(pongclstmp)
+                npongclsnonmiddle = sum([i and j for i, j in zip(nonmiddletmp, pongclstmp)])
+                # 明刻
+                pongoptmp = [meld[1] == meld[2] and (not isthis and i == rontileposi) for i, meld in enumerate(melds)]
+                npongop = sum(pongoptmp)
+                npongopnonmiddle = sum([i and j for i, j in zip(nonmiddletmp, pongoptmp)])
+                
+                fantmptmp = 0
+                futmptmp = fu
+                # 四暗刻/四暗刻单骑（暗杠也是暗刻）
+                yimantmp = (kongclsisum + npongcls == 4) * \
+                    (2 - any([meld[1] == meld[2] and rontile == meld[2:] for meld in melds]))
+                # 三暗刻（暗杠也是暗刻）
+                fantmptmp += (kongclsisum + npongcls == 3) * 2
+                # 算符
+                futmptmp += npongcls * 4 + npongclsnonmiddle * 4 + npongop * 2 + npongopnonmiddle * 2
+                # 平和型
+                ping = 0
+                meld = melds[rontileposi]
+                shun = not meld[0] == meld[1]
+                bian = (meld[0] == nt and nt == '7' and shun) or (meld[2] == nt and nt == '3' and shun)
+                kanordaqi = meld[1] == nt and (len(meld) == 3 or shun)
+                futmptmp += 2 * (bian or kanordaqi)
+                if not futmptmp:
+                    # 平和
+                    if cleari:
+                        fantmptmp += 1
+                        ping = 1
+                    # 副露平和型20符作30符处理
+                    else:
+                        futmptmp += 2
+                # 自摸2符，门前清荣和10符
+                if isthis:
+                    if not ping:
+                        futmptmp += 2
+                elif cleari:
+                    futmptmp += 10
+                futmptmp = (futmptmp // 10 + (futmptmp % 10 > 0)) * 10
+                if fantmptmp > fantmpmax:
+                    fantmpmax = fantmptmp
+                    futmpmax = futmptmp
+                elif fantmptmp == fantmpmax and futmptmp > futmpmax:
+                    futmpmax = futmptmp
+                if yimantmp > yimanmax:
+                    yimanmax = yimantmp
+            yiman += yimanmax
+            if yiman:
+                congratulations = 13 * yiman
+                return congratulations, congratulations, 0
+            fantmp += fantmpmax
+            futmp += futmpmax
             if fantmp > fanmax:
                 fanmax = fantmp
                 fumax = futmp
             elif fantmp == fanmax and futmp > fumax:
-                fanmax = fantmp
-                fumax = futmp   
+                fumax = futmp
         fan += fanmax
         # 无役听牌
         if ronmelds and not fan:
             return -1, -1, 0
         # 底符20符，加上宝牌/红宝牌，里宝牌
-        return fan, fan + fandora, fumax + 20
+        return fan, min(fan + fandora, 13), fumax + 20
     
     def pongAva(self, idx, player):
         """能不能碰
@@ -634,8 +727,8 @@ class Game(object):
         self.handscnt[player][idxmod] += 1
         self.unfixed[player][idx] = 1
         self.unfixedcnt[player][idxmod] += 1
-        self.dora[player] += idxmod in self.doraid
-        self.dorain[player] += idxmod in self.dorainid
+        self.dora[player] += self.doraid.count(idxmod)
+        self.dorain[player] += self.dorainid.count(idxmod)
     
         if ridgeview:
             self.doranum += 1
@@ -685,8 +778,8 @@ class Game(object):
                 self.rivercnt[player][idxmod] += 1
                 self.hands[player][idx] = 0
                 self.handscnt[player][idxmod] -= 1
-                self.dora[player] -= idxmod in self.doraid
-                self.dorain[player] -= idxmod in self.dorainid
+                self.dora[player] -= self.doraid.count(idxmod)
+                self.dorain[player] -= self.dorainid.count(idxmod)
                 unfixedi[idx] = 0
                 unfixedcnti[idxmod] -= 1
                 flag = 1
@@ -703,7 +796,7 @@ class Game(object):
         rivercnti = self.rivercnt[player]
         if listened:
             self.fritens[player] = any([rivercnti[i] and newlisten[i] for i in range(34)])
-            if riichiDo and self.points[player] > 1000 and self.clear[player] and not riichi[player]:
+            if riichiDo and self.points[player] >= 1000 and self.clear[player] and not riichi[player]:
                 riichi[player] = 1
                 abrupt[player] = 1
                 self.wriichi[player] = self.first
@@ -739,8 +832,8 @@ class Game(object):
         showncnti[idxmod] += 1
         self.hands[player][idx] = 1
         self.handscnt[player][idxmod] += 1
-        self.dora[player] += idxmod in self.doraid
-        self.dorain[player] += idxmod in self.dorainid
+        self.dora[player] += self.doraid.count(idxmod)
+        self.dorain[player] += self.dorainid.count(idxmod)
         self.pongop[player][idxmod] = 1
         rng = list(range(idxmod, 136, 34))
         if redfive:
@@ -784,8 +877,8 @@ class Game(object):
         showncnti[idxmod] += 1
         self.hands[player][idx] = 1
         self.handscnt[player][idxmod] += 1
-        self.dora[player] += idxmod in self.doraid
-        self.dorain[player] += idxmod in self.dorainid
+        self.dora[player] += self.doraid.count(idxmod)
+        self.dorain[player] += self.dorainid.count(idxmod)
         i, j = idxmod // 9 * 9, idxmod % 9
         unfixedi = self.unfixed[player]
         unfixedcnti = self.unfixedcnt[player]
@@ -840,15 +933,14 @@ class Game(object):
         Returns:
             boolean: if it is add kong (which can be grabbed)
         """
-        self.abrupt = [0] * 4
         self.first = 0
-        self.ridgeview = 1 # 下一张从岭上摸牌
+        self.ridgeview = 1
         showni = self.shown[player]
         showncnti = self.showncnt[player]
         unfixedi = self.unfixed[player]
         unfixedcnti = self.unfixedcnt[player]
         flag = 0
-        # 加杠或暗杠
+        # 加杠或暗杠，self.ridgeview分别置为1或-1，加杠不立刻翻宝牌而暗杠立刻翻宝牌，需要区分
         if player == self.playerthis:
             pongclsi = self.pongcls[player]
             pongopi = self.pongop[player]
@@ -862,16 +954,18 @@ class Game(object):
             else:
                 pongclsi[idxmod] = 0
                 self.kongcls[player][idxmod] = 1
+                self.ridgeview = -1
         # 明杠
         else:
+            self.abrupt = [0] * 4
             self.liuman[self.playerthis] = 0
             self.playerthis = player
             self.clear[player] = 0
             idxmod = idx % 34
             self.hands[player][idx] = 1
             self.handscnt[player][idxmod] += 1
-            self.dora[player] += idxmod in self.doraid
-            self.dorain[player] += idxmod in self.dorainid
+            self.dora[player] += self.doraid.count(idxmod)
+            self.dorain[player] += self.dorainid.count(idxmod)
             self.pongcls[player][idxmod] = 0
             self.kongop[player][idxmod] = 1
         unfixedi[idxmod] = 0
@@ -902,166 +996,20 @@ class Game(object):
             cnt[i] -= 4
         listeni = self.listen[player]
         listening = [i for i, j in enumerate(listeni) if j]
-        meldsall = []
+        meldsalls = []
         for i in listening:
             cnttmp = [k + (j == i) for j, k in enumerate(cnt)]
-            meldsall += cntMeldsAll(cnttmp)
-        if len(meldsall):
-            # 只有所有听牌型下和牌后均为暗刻才是真的暗刻
-            pongclstiles = [meld[-2:] for meld in meldsall[0] if \
-                len(meld) == 4 and meld[1] == meld[2] and all([meld in melds for melds in meldsall])]
+            meldsalls.append(cntMeldsAll(cnttmp))
+        if len(meldsalls[0]):
+            meldstmp = []
+            for melds in meldsalls[0]:
+                meldstmp += melds
+            meldstmp == set(meldstmp)
+            pongclstiles = [meld[-2:] for meld in meldstmp if \
+                len(meld) == 4 and meld[1] == meld[2] and all([
+                    # all([meld in melds for melds in meldsall]) # 在一些规则里只有所有听牌型下和牌后均为暗刻才是真的暗刻
+                    any([meld in melds for melds in meldsall]) # 但是在雀魂里只要不影响听牌型就可以
+                    for meldsall in meldsalls[1:]
+                ])]
             for tile in pongclstiles:
-                pongclsi[TILE_IDXMOD[tile]] = 1
-        
-def cntMeldsAll(cnt):
-    melds3 = [0] * 4
-    melds2 = [0] * 4
-    meldsi = []
-    isomers = [0] * 4
-    for i, color in enumerate(reversed(sorted(COLORS))):
-        melds3[i], melds2[i], melds, isomers[i] = cntMelds(cnt[27-i*9:36-i*9])
-        if melds3[i] < 0:
-            return []
-        meldsi.append(melds)
-    if not sum(melds3) == sum(cnt) // 3 and sum(melds2) == 1:
-        return []
-    meldsall = []
-    for meldsz in meldsi[0]:
-        for meldss in meldsi[1]:
-            for meldsp in meldsi[2]:
-                for meldsm in meldsi[3]:
-                    meldsall.append(
-                        [meldz + 'z' for meldz in meldsz] + \
-                        [melds + 's' for melds in meldss] + \
-                        [meldp + 'p' for meldp in meldsp] + \
-                        [meldm + 'm' for meldm in meldsm]
-                    )
-    assert len(meldsall) == isomers[0] * isomers[1] * isomers[2] * isomers[3]
-    return meldsall
-
-def cntMelds(cnt):
-    cntsum = sum(cnt)
-    if not (cntsum%3 == 1):
-        # 字牌
-        if len(cnt) == 7:
-            melds = []
-            cntcnt = [0] * 5 # 某种字牌可能有0~4张
-            for tile, num in enumerate(cnt):
-                cntcnt[num] += 1
-                if num:
-                    melds.append(str(tile+1) * num)
-            if not (cntcnt[1] or cntcnt[4] or cntcnt[2] > 1):
-                return cntcnt[3], cntcnt[2], [melds], 1
-        elif len(cnt) == 9:
-            childl = [0] * 9
-            childr = [0] * 9
-            l3 = NOTAMELD
-            r3 = NOTAMELD
-            # disconnect
-            for i in range(1, 8):
-                if cnt[i-1] and sum(cnt[i+1:]) and not cnt[i]:
-                    childl = cnt[:i] + [0] * (9 - i)
-                    childr = [0] * i + cnt[i:]
-                    break
-            if any(childl):
-                l3, l2, lm, li = cntMelds(childl)
-                r3, r2, rm, ri = cntMelds(childr)
-                lrm = []
-                for lmi in lm:
-                    for rmi in rm:
-                        lrm.append(lmi + rmi)
-                return l3 + r3, l2 + r2, lrm, li * ri
-            # leaf
-            cntmax = max(cnt)
-            cntpos = argmax(cnt)
-            if cntsum == 0:
-                return 0, 0, [[]], 1
-            if cntsum == 2 and cntmax == 2:
-                return 0, 1, [[str(cntpos+1) * 2]], 1
-            if cntsum == 3:
-                if cntmax == 3:
-                    return 1, 0, [[str(cntpos+1)*3]], 1
-                if cntmax == 1:
-                    return 1, 0, [[str(cntpos+1)+str(cntpos+2)+str(cntpos+3)]], 1
-            # decomposition
-            # for i, j in enumerate(cnt):
-            #     if j:
-            #         break
-            i = [j > 0 for j in cnt].index(True)
-            if i > 6: # only 8 or 9, can not form meld
-                melds = []
-                cntcnt = [0] * 5
-                for tile, num in enumerate(cnt):
-                    cntcnt[num] += 1
-                    if num:
-                        melds.append(str(tile+1) * num)
-                if not (cntcnt[1] or cntcnt[4] or cntcnt[2] > 1):
-                    return cntcnt[3], cntcnt[2], [melds], 1
-            elif cnt[i] == 1 or cnt[i] == 4: # 一定有至少一个顺子
-                if cnt[i+1] and cnt[i+2]:
-                    childl = [k-(i-1<j and j<i+3) for j, k in enumerate(cnt)]
-                    l3, l2, lm, li = cntMelds(childl)
-                    if l3 >= 0:
-                        lm = [lmi + [str(i+1)+str(i+2)+str(i+3)] for lmi in lm]
-                        return l3 + 1, l2, lm, li
-            elif cnt[i] == 2:
-                # 做将或有一杯口形状
-                childl = [k-(i==j)*2 for j, k in enumerate(cnt)]
-                l3, l2, lm, li = cntMelds(childl)
-                if cnt[i+1] > 1 and cnt[i+2] > 1: 
-                    childr = [k-(i-1<j and j<i+3)*2 for j, k in enumerate(cnt)]
-                    r3, r2, rm, ri = cntMelds(childr)
-                if l3 >= 0:
-                    lm = [lmi + [str(i+1)*2] for lmi in lm]
-                    l2 += 1
-                    if r3 >= 0:
-                        if l3 == r3 + 2 and l2 == r2:
-                            rm = [rmi + [str(i+1)+str(i+2)+str(i+3)]*2 for rmi in rm]
-                            lm += rm
-                            li += ri
-                    return l3, l2, lm, li
-                elif r3 >= 0:
-                    rm = [rmi + [str(i+1)+str(i+2)+str(i+3)]*2 for rmi in rm]
-                    r3 += 2
-                    return r3, r2, rm, ri
-            else: # 做刻或做将或有三杯口形状
-                # 虽然三杯口是三暗刻，但是在最本格的规则里需要区分，因为三暗刻未必是三杯口
-                childl = [k-(i==j)*3 for j, k in enumerate(cnt)]
-                l3, l2, lm, li = cntMelds(childl)
-                if cnt[i+1] and cnt[i+2]: # 做将或三杯口形状一定有至少一个顺子
-                    childr = [k-(i-1<j and j<i+3) for j, k in enumerate(cnt)]
-                    r3, r2, rm, ri = cntMelds(childr)
-                if l3 >= 0:
-                    lm = [lmi + [str(i+1)*3] for lmi in lm]
-                    l3 += 1
-                    if r3 >= 0:
-                        rm = [rmi + [str(i+1)+str(i+2)+str(i+3)] for rmi in rm]
-                        lm += rm
-                        li += ri
-                    return l3, l2, lm, li
-                elif r3 >= 0:
-                    rm = [rmi + [str(i+1)+str(i+2)+str(i+3)] for rmi in rm]
-                    r3 += 1
-                    return r3, r2, rm, ri
-    return NOTAMELD, NOTAMELD, [[]], 0
-
-def cntPts(fan, fu):
-    pt = [1, 2, 4, 6]
-    if not ((fan == 4 and fu > 30) or (fan == 3 and fu > 60) or fan > 4):
-        pt = [fu * pti * (2 ** (fan + 2)) for pti in pt]
-        pt = [(pti // 100 + (pti % 100 > 0)) * 100 for pti in pt]
-    elif fan < 6:
-        pt = [pti * 2000 for pti in pt]
-    elif fan < 8:
-        pt = [pti * 3000 for pti in pt]
-    elif fan < 11:
-        pt = [pti * 4000 for pti in pt]
-    elif fan < 13:
-        pt = [pti * 6000 for pti in pt]
-    else:
-        pt = [pti * 8000 for pti in pt]
-    return pt
-
-def argmax(x):
-    m = max(x)
-    return [i for i, j in enumerate(x) if m == j][0]
+                pongclsi[tileParser(tile)] = 1

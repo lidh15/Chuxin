@@ -5,6 +5,7 @@ from shutil import copyfile
 import h5py
 import numpy as np
 
+# DEPRECATED in 10/22/2020 2:00
 COLORS = {'m':0, 'p':9, 's':18, 'z':27}
 MAX_ACTIONS = 5000
 
@@ -1031,7 +1032,7 @@ def cntMeldsAll(cnt):
     melds2 = np.zeros(4)
     meldsi = []
     isomers = np.zeros(4)
-    for i, color in enumerate(reversed(sorted(COLORS))):
+    for i, _ in enumerate(reversed(sorted(COLORS))):
         melds3[i], melds2[i], melds, isomers[i] = cntMelds(cnt[27-i*9:36-i*9])
         if np.isnan(melds3[i]):
             return []
@@ -1242,6 +1243,5 @@ if __name__ == "__main__":
             if gameEnd:
                 g.recorddata.close()
                 break
-        # if flag:
-        #     copyfile('tmp.h5', newpath+uuid+'.h5')
-        # break
+        if flag:
+            copyfile('tmp.h5', newpath+uuid+'.h5')

@@ -1,0 +1,5 @@
+*.log
+*.json
+data/
+backup/
+__pycache__

@@ -7,8 +7,14 @@ from selenium.webdriver.common.by import By
 driver = webdriver.Chrome()
 driver.maximize_window()
 
-prefix = '{"source":"majsoul","accountid":15370948,"starttime":1602045496,"endtime":1602046471,"uuid":"'
-suffix = '","version":"0.4.5","playerdata":[{"id":15443150,"name":"鈴見奏","rank":2,"pt":78,"finalpoint":22400,"deltapt":-7},{"id":11199262,"name":"baijiajia","rank":4,"pt":411,"finalpoint":24600,"deltapt":10},{"id":15403271,"name":"CCP的銅牆鐵壁","rank":3,"pt":60,"finalpoint":32300,"deltapt":33},{"id":15370948,"name":"数据下载专用","rank":1,"pt":0,"finalpoint":20700,"deltapt":-19}],"roomdata":{"init_point":25000,"fandian":30000,"time_fixed":5,"time_add":20,"dora_count":3,"shiduan":true,"room":1,"player":4,"round":4}}\n'
+'''You need a real data as a hook for the crawler like this
+youraccountid = ''
+yourname = ''
+prefix = '{"source":"majsoul","accountid":%s,"starttime":0,"endtime":0,"uuid":"'%youraccountid
+suffix = '","version":"0.4.5","playerdata":[{"id":0,"name":"","rank":0,"pt":0,"finalpoint":25000,"deltapt":0},{"id":0,"name":"","rank":0,"pt":0,"finalpoint":25000,"deltapt":0},{"id":0,"name":"","rank":0,"pt":0,"finalpoint":25000,"deltapt":0},{"id":%s,"name":"%s","rank":0,"pt":0,"finalpoint":25000,"deltapt":0}],"roomdata":{"init_point":25000,"fandian":30000,"time_fixed":5,"time_add":20,"dora_count":3,"shiduan":true,"room":1,"player":4,"round":4}}\n'%(youraccountid, yourname)
+'''
+prefix = ''
+suffix = ''
 for month in range(1, 10):
     for date in range(1, 30):
         output = []

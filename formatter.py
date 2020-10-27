@@ -1,50 +1,60 @@
-import json
+import logging
 import os
-from shutil import copyfile
-import numpy as np
+import sys
+import tarfile
+import time
 
-from game_branch import Game
+from tqdm import tqdm
 
-datapath = './data/'
-rawpath = datapath + 'paipus/'
-newpath = datapath + 'output/'
-uuids = os.listdir(rawpath)
-for uuid in uuids:
-    print(uuid)
-    with open(rawpath+uuid, encoding='utf-8') as src:
-        record = json.loads(src.readline())['record']
-    g = Game(jsonrecord=record)
-    flag = 1
-    gameEnd = 0
-    while True:
-        # try:
-        #     g.checkRound()
-        # except:
-        #     e = 'check failed '+uuid+' round %d'%g.recordid
-        #     print(e)
-        #     with open('formatter.log', 'a') as logfile:
-        #         logfile.writelines([e+'\n'])
-        #     flag = 0
-        #     g.recorddata.close()
-        #     break
-        # finally:
-        #     pass
-        # try:
-        #     gameEnd = g.runRound()
-        # except Exception as e:
-        #     print('run failed at round %d'%g.recordid, repr(e))
-        #     flag = 0
-        #     g.recorddata.close()
-        #     break
-        # finally:
-        #     if gameEnd:
-        #         g.recorddata.close()
-        #         break
-        g.checkRound()
-        gameEnd = g.runRound()
-        if gameEnd:
-            g.recorddata.close()
-            break
-    if flag:
-        copyfile('tmp.h5', newpath+uuid+'.h5')
-    # break
+from players import RecorderText as Recorder
+from utils import N, finder
+
+if __name__ == '__main__':
+    logging.basicConfig(filename='recorder.log', level=logging.DEBUG)
+    arg = sys.argv[1:]
+    start = 0
+    end = N
+    bar = 1
+    batchsize = 100
+    if len(arg):
+        start = int(arg[0])
+        end = int(arg[1])
+        bar = 0
+        batchsize = 5076
+    datapath = '/mnt/d/Chuxin/data/'
+    recorder = Recorder(datapath=datapath)
+    uuids = os.listdir(recorder.rawpath)
+    uuids.sort()
+    formatted = os.listdir(''.join([datapath, 'output/txt/']))
+    formatted.sort()
+    pbar = tqdm(total=len(uuids)) if bar else None
+    success = 0
+    t0 = time.time()
+    for cnt, uuid in enumerate(uuids[start:end]):
+        try:
+            success += 1
+            if finder(formatted, ''.join([uuid, '.txt'])):
+                continue
+            recorder.runGame(uuid)
+        except:
+            success -= 1
+            logging.error(f'formatting failed {uuid:s}')
+        finally:
+            recorder.reset()
+        if cnt % batchsize == batchsize - 1:
+            t1 = time.time()
+            batchcnt = (cnt + 1) // batchsize
+            logging.info(f'{cnt+1:d} uuids checked, {success:d} formatted in {t1-t0:.2f}s')
+            if not pbar is None:
+                pbar.update(batchsize)
+                pbar.set_description(f'batch time: {t1-t0:.2f}s')
+            t0 = t1
+
+            # Seems that tar is not meaningful.
+            # for filetype in ['npy', 'txt']:
+            #     path = f'{datapath:s}output/{filetype:s}/'
+            #     tar = tarfile.open(f'backup/{filetype:s}/{batchcnt:04d}.tar.gz', 'w:gz')
+            #     for name in os.listdir(path):
+            #         filename = ''.join([path, name])
+            #         tar.add(filename)
+            #     tar.close()

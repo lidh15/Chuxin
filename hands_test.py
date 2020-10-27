@@ -98,6 +98,7 @@ def hands_test(cnt):
             return r3, r2, rm, ri
     return np.nan, np.nan, [[]], 0
 
+# npless version
 NOTAMELD = -100
 argmax = np.argmax
 
